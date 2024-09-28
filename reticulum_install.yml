@@ -1,0 +1,114 @@
+---
+- name: Install Nomadnet, Reticulum, and Tailscale on Raspberry Pi (Debian Bookworm)
+  hosts: all
+  become: yes
+  
+  vars:
+    tailscale_authkey: "your-tskey-auth-"
+    venv_path: "/opt/nomadnet_venv"
+
+  tasks:
+    - name: Update and upgrade apt packages
+      apt:
+        upgrade: yes
+        update_cache: yes
+
+    - name: Install required packages
+      apt:
+        name: 
+          - python3-venv
+          - python3-pip
+          - build-essential
+          - libzim-dev
+        state: present
+
+    - name: Create virtual environment
+      command: python3 -m venv {{ venv_path }}
+      args:
+        creates: "{{ venv_path }}"
+
+    - name: Install Nomadnet in virtual environment
+      pip:
+        name: 
+          - nomadnet
+          - rns
+          - libzim
+          - beautifulsoup4
+        state: latest
+        virtualenv: "{{ venv_path }}"
+
+    - name: Add Tailscale GPG key
+      get_url:
+        url: https://pkgs.tailscale.com/stable/debian/bookworm.noarmor.gpg
+        dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+        mode: '0644'
+
+    - name: Add Tailscale repository
+      get_url:
+        url: https://pkgs.tailscale.com/stable/debian/bookworm.tailscale-keyring.list
+        dest: /etc/apt/sources.list.d/tailscale.list
+        mode: '0644'
+
+    - name: Install Tailscale
+      apt:
+        name: tailscale
+        state: present
+        update_cache: yes
+
+    - name: Start Tailscale service
+      systemd:
+        name: tailscaled
+        state: started
+        enabled: yes
+
+    - name: Authorize Tailscale with SSH enabled
+      command: tailscale up --authkey={{ tailscale_authkey }} --ssh
+      register: tailscale_auth
+      changed_when: "'Success' in tailscale_auth.stdout"
+
+    - name: Get Tailscale IP
+      command: tailscale ip -4
+      register: tailscale_ip
+      changed_when: false
+
+    - name: Display Tailscale IP
+      debug:
+        var: tailscale_ip.stdout
+
+    - name: Create systemd service file for Nomadnet daemon
+      copy:
+        dest: /etc/systemd/system/nomadnet.service
+        content: |
+          [Unit]
+          Description=Nomadnet Daemon
+          After=network.target
+
+          [Service]
+          ExecStart={{ venv_path }}/bin/nomadnet --daemon
+          Restart=always
+          User=ansible
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Create systemd service file for Nomadnet Message Board
+      copy:
+        dest: /etc/systemd/system/nomadnet-mb.service
+        content: |
+          [Unit]
+          Description=Nomadnet Message Board Daemon
+          After=network.target
+
+          [Service]
+          ExecStart={{ venv_path }}/bin/python /home/ansible/.nomadmb/messageboard.py
+          Restart=always
+          User=ansible
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start Nomadnet service
+      systemd:
+        name: nomadnet-mb
+        enabled: yes
+        state: started
